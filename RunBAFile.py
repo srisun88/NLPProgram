@@ -2,171 +2,229 @@ import pandas as pd
 import spacy
 import re
 
-# Load NLP model
 nlp = spacy.load("en_core_web_sm")
 
-# -------------------------------------------------------
-# GLOBAL LIST (Ambiguity + TBD)
-# -------------------------------------------------------
+# -----------------------------------------
+# GLOBAL CONFIG
+# -----------------------------------------
 TBD_TERMS = ["tbd", "to be decided", "to be determined"]
+
 AMBIGUOUS_TERMS = [
     "may", "might", "should", "could", "possibly", "approximately",
-    "etc", "and/or", "various", "usually", "commonly",
-    "sometime"
+    "etc", "and/or", "various", "usually", "commonly", "sometime"
 ] + TBD_TERMS
 
+NFR_KEYWORDS = {
+    "performance": ["seconds", "load", "response", "latency"],
+    "security": ["encrypt", "secure", "authentication"],
+    "compatibility": ["chrome", "firefox", "mobile", "browser"],
+    "error_handling": ["error", "invalid", "fail"],
+    "availability": ["99%", "uptime", "sla"]
+}
 
-# -------------------------------------------------------
-# 1. Gherkin Structure Checker (Now includes TBD FAIL)
-# -------------------------------------------------------
+# -----------------------------------------
+# GHERKIN REWRITE (NEW LOGIC)
+# -----------------------------------------
+def gherkin_rewrite(ac_text):
+    ac = ac_text.strip().lower()
+
+    # Full rewrite
+    if not any(k in ac for k in ["given", "when", "then"]):
+        return (
+            f"Given a valid user session, "
+            f"When {ac_text.split()[0].lower()} action is triggered, "
+            f"Then {ac_text}"
+        )
+
+    # Partial rewrite: missing WHEN
+    if ("given" in ac) and ("when" not in ac) and ("then" in ac):
+        return ac_text.replace("Given", "Given") + "\nWhen action is triggered"
+
+    # Partial rewrite: missing THEN
+    if ("given" in ac) and ("when" in ac) and ("then" not in ac):
+        return ac_text.replace("When", "When") + "\nThen expected outcome"
+
+    # Already Gherkin → return original
+    return ac_text
+
+
+# -----------------------------------------
+# GHERKIN CHECKER
+# -----------------------------------------
 def gherkin_checker(ac_text):
     if not isinstance(ac_text, str) or len(ac_text.strip()) == 0:
         return "Fail", "No AC provided."
 
     ac = ac_text.lower()
 
-    # NEW: Immediate fail for incomplete (TBD)
     if any(term in ac for term in TBD_TERMS):
-        return "Fail", "AC contains TBD / incomplete information."
+        return "Fail", "AC contains TBD."
 
     required = ["given", "when", "then"]
-
     missing = [word for word in required if word not in ac]
+
     if missing:
-        return "Fail", f"Missing Gherkin keywords: {missing}"
+        return "Fail", f"Missing Gherkin elements: {missing}"
 
-    # Check order
     if not (ac.find("given") < ac.find("when") < ac.find("then")):
-        return "Fail", "Incorrect Gherkin order (should be Given → When → Then)."
+        return "Fail", "Incorrect GWT order"
 
-    return "Pass", "Valid Gherkin format."
+    return "Pass", "Valid Gherkin format"
 
 
-# -------------------------------------------------------
-# 2. Ambiguity + Severity Checker (TBD → Critical)
-# -------------------------------------------------------
-def check_ambiguity_with_severity(text):
-    if not isinstance(text, str) or len(text.strip()) == 0:
-        return "Fail", "No AC provided.", "Critical"
+# -----------------------------------------
+# AMBIGUITY CHECKER
+# -----------------------------------------
+def check_ambiguity(text):
+    if not isinstance(text, str):
+        return "Fail", "No AC", "Critical"
 
-    text_lower = text.lower()
-    doc = nlp(text_lower)
+    t = text.lower()
+    doc = nlp(t)
+    found = set()
 
-    found = []
-
-    # Single-word token-based detection
     for token in doc:
         if token.text in AMBIGUOUS_TERMS:
-            found.append(token.text)
+            found.add(token.text)
 
-    # Multi-word TBD detection
-    for phrase in TBD_TERMS:
-        if phrase in text_lower:
-            found.append(phrase)
-
-    found = list(set(found))  # unique terms
-
-    # TBD → Critical severity
-    if any(term in text_lower for term in TBD_TERMS):
-        return "Fail", f"Incomplete data (TBD) detected: {found}", "Critical"
-
-    # Normal ambiguity
     if found:
-        return "Fail", f"Ambiguous words detected: {found}", "Medium"
+        if any(term in t for term in TBD_TERMS):
+            return "Fail", f"TBD: {found}", "Critical"
+        return "Fail", f"Ambiguous: {found}", "Medium"
 
-    return "Pass", "No ambiguity detected.", "None"
-
-
-# -------------------------------------------------------
-# 3. Gherkin Rewriter
-# -------------------------------------------------------
-def rewrite_gherkin(ac_text):
-    text = ac_text.strip()
-
-    # Skip rewrite if TBD present
-    if any(term in text.lower() for term in TBD_TERMS):
-        return "Cannot rewrite — AC contains TBD/incomplete information."
-
-    if not any(k in text.lower() for k in ["given", "when", "then"]):
-        return f"Given {text},\nWhen user performs the action,\nThen the expected result should occur."
-
-    lines = text.split("\n")
-    formatted = []
-
-    for line in lines:
-        original = line.strip()
-        lower = original.lower()
-
-        if lower.startswith("given"):
-            formatted.append("Given " + original[5:].strip().capitalize())
-        elif lower.startswith("when"):
-            formatted.append("When " + original[4:].strip().capitalize())
-        elif lower.startswith("then"):
-            formatted.append("Then " + original[4:].strip().capitalize())
-        else:
-            formatted.append(original.capitalize())
-
-    return "\n".join(formatted)
+    return "Pass", "Clear", "None"
 
 
-# -------------------------------------------------------
-# 4. Final Severity Merger
-# -------------------------------------------------------
-def calculate_final_severity(gherkin_msg, amb_severity):
-    if "TBD" in gherkin_msg or "incomplete" in gherkin_msg.lower():
-        return "Critical"
+# -----------------------------------------
+# INVEST
+# -----------------------------------------
+def invest_scoring(text):
+    if not isinstance(text, str):
+        return {}, "Invalid input"
 
-    if amb_severity == "Critical":
-        return "Critical"
+    t = text.lower()
+    score = {
+        "I_Independent": "Pass",
+        "N_Negotiable": "Pass",
+        "V_Valuable": "Pass",
+        "E_Estimable": "Pass",
+        "S_Small": "Pass",
+        "T_Testable": "Pass"
+    }
 
-    if "Missing Gherkin" in gherkin_msg or "Incorrect Gherkin" in gherkin_msg:
-        return "High"
+    if re.search(r"\b(story|depends|subtask|part\s*\d)\b", t):
+        score["I_Independent"] = "Fail"
 
-    if amb_severity == "Medium":
-        return "Medium"
+    ui_terms = ["click button", "use react", "database table", "html"]
+    if any(term in t for term in ui_terms):
+        score["N_Negotiable"] = "Fail"
 
-    return "None"
+    if "so that" not in t:
+        score["V_Valuable"] = "Fail"
+
+    if not re.search(r"\d+", t):
+        score["E_Estimable"] = "Fail"
+
+    if len(text.split()) > 80 or text.lower().count(" and ") > 2:
+        score["S_Small"] = "Fail"
+
+    if not any(k in t for k in ["given", "then", "expected", "result"]):
+        score["T_Testable"] = "Fail"
+
+    total_fails = list(v for v in score.values() if v == "Fail")
+    summary = "Pass" if len(total_fails) == 0 else f"{len(total_fails)} INVEST weaknesses"
+
+    return score, summary
 
 
-# -------------------------------------------------------
-# 5. MAIN EXECUTION
-# -------------------------------------------------------
+# -----------------------------------------
+# NFR CHECK
+# -----------------------------------------
+def nfr_check(text):
+    if not isinstance(text, str):
+        return "Fail", "No AC"
+
+    found = []
+    for category, words in NFR_KEYWORDS.items():
+        if any(w in text.lower() for w in words):
+            found.append(category)
+
+    if found:
+        return "Pass", f"NFR: {list(set(found))}"
+
+    return "Fail", "No NFR"
+
+
+# -----------------------------------------
+# AUTOMATION MAPPING
+# -----------------------------------------
+def automation_mapping(text):
+    if not isinstance(text, str):
+        return "Low", "Not automatable"
+
+    t = text.lower()
+    score = 0
+
+    if all(k in t for k in ["given", "when", "then"]):
+        score += 2
+    if re.search(r"\d+", t):
+        score += 2
+    if "error" in t or "invalid" in t:
+        score += 1
+
+    if score >= 4:
+        return "High", "Strong BDD candidate"
+    if score >= 2:
+        return "Medium", "Partial automation"
+
+    return "Low", "Weak automation"
+
+
+# -----------------------------------------
+# MAIN EXECUTION
+# -----------------------------------------
 df = pd.read_excel("BA_Acceptance_Criteria.xlsx")
 results = []
 
-for index, row in df.iterrows():
+for _, row in df.iterrows():
     ac = row["Acceptance Criteria"]
 
-    # Checks
-    gherkin_score, gherkin_msg = gherkin_checker(ac)
-    amb_score, amb_msg, amb_severity = check_ambiguity_with_severity(ac)
+    g_score, g_msg = gherkin_checker(ac)
+    a_score, a_msg, _ = check_ambiguity(ac)
+    invest_dict, invest_msg = invest_scoring(ac)
+    nfr_score, nfr_msg = nfr_check(ac)
+    auto_score, auto_msg = automation_mapping(ac)
 
-    # Final severity combining both
-    final_severity = calculate_final_severity(gherkin_msg, amb_severity)
+    # 🔥 New rewritten Gherkin output
+    improved_story = gherkin_rewrite(ac)
 
-    # Improved gherkin rewrite
-    rewritten_ac = rewrite_gherkin(ac)
-
-    # Append results
     results.append([
         ac,
-        gherkin_score, gherkin_msg,
-        amb_score, amb_msg,
-        final_severity,
-        rewritten_ac
+        g_score, g_msg,
+        a_score, a_msg,
+        invest_dict["I_Independent"],
+        invest_dict["N_Negotiable"],
+        invest_dict["V_Valuable"],
+        invest_dict["E_Estimable"],
+        invest_dict["S_Small"],
+        invest_dict["T_Testable"],
+        invest_msg,
+        nfr_score, nfr_msg,
+        auto_score, auto_msg,
+        improved_story
     ])
 
-# Output column names
-output_columns = [
+output_cols = [
     "Original AC",
     "Gherkin Score", "Gherkin Message",
     "Ambiguity Score", "Ambiguity Message",
-    "Severity Level",
-    "Improved Gherkin AC"
+    "INVEST I", "INVEST N", "INVEST V", "INVEST E", "INVEST S", "INVEST T", "INVEST Summary",
+    "NFR Score", "NFR Message",
+    "Automation Score", "Automation Message",
+    "Improved Story"
 ]
 
-# Export to Excel
-output = pd.DataFrame(results, columns=output_columns)
-output.to_excel("Gherkin_Analysis_Output.xlsx", index=False)
+out = pd.DataFrame(results, columns=output_cols)
+out.to_excel("Agile_Quality_INVEST.xlsx", index=False)
 
-print("✔ Gherkin AC analysis completed successfully with updated TBD handling!")
+print("✔ Completed with Gherkin rewrite applied.")
